@@ -17,7 +17,7 @@ for i, client in enumerate(regions_clients):
     instances = client.instances.all()
     for instance in instances:
         watch = regions_cloudwatches[i]
-        print(instance)
+        print("Instance of type ", instance.instance_type, " with ID: ", instance.id, " in state: ", instance.state, " / Tags: ", str(instance.tags))
         print("===========")
         print('Metrics:')
         metrics = watch.list_metrics(Namespace='AWS/EC2', Dimensions=[{"Name": "InstanceId",
