@@ -30,7 +30,7 @@ def find_all_instances():
     instances_dict = {}
     all_metrics = []
     for reg in regions:
-        print(f"\rAnalysing region '{reg}'...", end='')
+        print(f"\r\033[KAnalysing region '{reg}'...", end='')
 
         ec2 = regions_clients[reg]
         instances = list(ec2.instances.all())
@@ -48,7 +48,7 @@ def find_all_instances():
             for met in metrics:
                 if not next((x for x in all_metrics if x['name'] == met['MetricName']), None):
                     all_metrics.append({'name': met['MetricName'], 'value': met})
-    print("\r...Got all instances")
+    print("\r\033[K...Got all instances")
 
     all_metrics.sort(key=lambda x: x['name'])
 
@@ -106,7 +106,7 @@ def print_metrics(period, met, instances):
                         data[data_key] = sizeof_fmt(data[data_key])
                     elif data['Unit'] == 'Percent':
                         data[data_key] = f"{data[data_key]} %"
-                    else:
+                    elif not data['Unit'] == 'Count':
                         data[data_key] = f"{data[data_key]} {data['Unit']}"
                 metrics.append([instance_id, data['Minimum'], data['Maximum'], data['Average'], data['Sum'], data['SampleCount']])
             except:
@@ -126,7 +126,7 @@ def delete_instance(instance_id, region):
 def get_all_images():
     images_dict = {}
     for reg in regions:
-        print(f"\rAnalysing region '{reg}'...", end='')
+        print(f"\r\033[KAnalysing region '{reg}'...", end='')
 
         ec2 = regions_clients[reg]
         images = list(ec2.images.filter(Owners=['self']))
@@ -137,7 +137,7 @@ def get_all_images():
             continue
         for image in images:
             images_dict[reg][image.id] = {"image": image}  # TODO this does not need to be a dict
-    print("\r...Got all images")
+    print("\r\033[K...Got all images")
     return images_dict
 
 
@@ -159,7 +159,7 @@ def images_pretty_print(images):
 def get_all_volumes():
     volumes_dict = {}
     for reg in regions:
-        print(f"\rAnalysing region '{reg}'...", end='')
+        print(f"\r\033[KAnalysing region '{reg}'...", end='')
 
         ec2 = regions_clients[reg]
         volumes = list(ec2.volumes.all())
@@ -170,7 +170,7 @@ def get_all_volumes():
             continue
         for volume in volumes:
             volumes_dict[reg][volume.id] = {"volume": volume}  # TODO this does not need to be a dict
-    print("\r...Got all volumes")
+    print("\r\033[K...Got all volumes")
     return volumes_dict
 
 
@@ -194,6 +194,8 @@ def delete_decision(instance, region, all_metrics, cpu_max_threshold, network_th
     day_period = 24 * hour_period
     week_period = 7 * day_period
 
+    periods = [(week_period, "last week"), (day_period, "last day"), (hour_period, "last hour")]
+
     cpu_metric = next((x['value'] for x in all_metrics if x['name'] == 'CPUUtilization'), None)
     network_in_metric = next((x['value'] for x in all_metrics if x['name'] == 'NetworkIn'), None)
     network_out_metric = next((x['value'] for x in all_metrics if x['name'] == 'NetworkOut'), None)
@@ -202,30 +204,24 @@ def delete_decision(instance, region, all_metrics, cpu_max_threshold, network_th
     if instance.state['Name'] == 'stopped':
         return True, "Instance is stopped", None, None
 
-    if cpu_metric:
-        cpu_day = metric_for_instance(day_period, cpu_metric, instance.id, watch_client)
-        if cpu_day['Maximum'] < cpu_max_threshold:
-            return True, f"CPU Usage below {cpu_max_threshold}% over last 24 hours", cpu_metric, day_period
-        cpu_hour = metric_for_instance(hour_period, cpu_metric, instance.id, watch_client)
-        if cpu_hour['Maximum'] < cpu_max_threshold:
-            return True, f"CPU Usage below {cpu_max_threshold}% over last hour", cpu_metric, hour_period
+    for (period, period_name) in periods:
+        try:
+            if cpu_metric:
+                cpu = metric_for_instance(period, cpu_metric, instance.id, watch_client)
+                if cpu['Maximum'] <= cpu_max_threshold:
+                    return True, f"CPU Usage smaller or equal to {cpu_max_threshold} % over {period_name}", cpu_metric, period
 
-    if network_in_metric:
-        network_in_day = metric_for_instance(day_period, network_in_metric, instance.id, watch_client)
-        if network_in_day['Maximum'] < network_threshold:
-            return True, f"Network in below {network_threshold} bytes over last 24 hours", network_in_metric, day_period
-        network_in_hour = metric_for_instance(hour_period, network_in_metric, instance.id, watch_client)
-        if network_in_hour['Maximum'] < network_threshold:
-            return True, f"Network in below {network_threshold} bytes over last hour", network_in_metric, hour_period
+            if network_in_metric:
+                network_in = metric_for_instance(period, network_in_metric, instance.id, watch_client)
+                if network_in['Sum'] <= network_threshold:
+                    return True, f"Network in smaller or equal to {sizeof_fmt(network_threshold)} over {period_name}", network_in_metric, period
 
-    if network_out_metric:
-        network_out_day = metric_for_instance(day_period, network_out_metric, instance.id, watch_client)
-        if network_out_day['Maximum'] < network_threshold:
-            return True, f"Network out below {network_threshold} bytes over last 24 hours", network_out_metric, day_period
-        network_out_hour = metric_for_instance(hour_period, network_out_metric, instance.id, watch_client)
-        if network_out_hour['Maximum'] < network_threshold:
-            return True, f"Network out below {network_threshold} bytes over last hour", network_out_metric, hour_period
-
+            if network_out_metric:
+                network_out = metric_for_instance(period, network_out_metric, instance.id, watch_client)
+                if network_out['Sum'] <= network_threshold:
+                    return True, f"Network out smaller or equal to {sizeof_fmt(network_threshold)} over {period_name}", network_out_metric, period
+        except:
+            print(f"Couldn't get metrics for {instance_id}")
     return False, "", None, None
 
 
@@ -268,23 +264,13 @@ while running:
             'type': 'list',
             'name': 'cpu',
             'message': 'What max CPU threshold do you want to use?',
-            'choices': [
-                {'name': '< 0 %', 'value': 0.0001},
-                {'name': '< 1 %', 'value': 1},
-                {'name': '< 5 %', 'value': 5},
-                {'name': '< 10 %', 'value': 10},
-                {'name': '< 20 %', 'value': 20},
-            ]
+            'choices': [{'name': f'< {x} %', 'value': x} for x in [0, 1, 5, 10, 20]]
         }, {
             'type': 'list',
             'name': 'network',
             'message': 'What network threshold do you want to use?',
-            'choices': [
-                {'name': '< 500 bytes', 'value': 500},
-                {'name': '< 100 kbytes', 'value': 100e3},
-                {'name': '< 1 Mbytes', 'value': 1e6},
-                {'name': '< 10 Mbytes', 'value': 10e6},
-            ]
+            'choices':
+                [{'name': f'< {sizeof_fmt(x)}', 'value': x} for x in [512, 100 * 1024, 1024 ** 2, 10 * 1024 ** 2]]
         }]
 
         answers = prompt(criterias)
