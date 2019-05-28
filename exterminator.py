@@ -32,7 +32,7 @@ def find_all_instances():
         else:
             continue
         for instance in instances:
-            instances_dict[reg][instance.id] = {"instance": instance, "metrics": {}}
+            instances_dict[reg][instance.id] = {"instance": instance, "metrics": {}}  # TODO this does not need to be a dict
             watch = regions_cloudwatches[reg]
             metrics = watch.list_metrics(Namespace='AWS/EC2', Dimensions=[{"Name": "InstanceId",
                                                                            "Value": instance.id}])
@@ -81,7 +81,7 @@ def metric_for_instance(period, met, instance_id, watch_client):
 def print_metrics(period, met, instances):
     print(met['MetricName'])
     for region in instances.keys():
-        print(f"{region}:")
+
         headers = np.array(["ID", "Min", "Max", "Average", "Unit"])
         watch = regions_cloudwatches[region]
         metrics = []
@@ -93,9 +93,11 @@ def print_metrics(period, met, instances):
                 metrics.append([instance_id, data['Minimum'], data['Maximum'], data['Average'], data['Unit']])
             except:
                 print(f"Couldn't get metrics for {instance_id}")
-        metrics = np.array(metrics)
-        width = np_len(np.append(headers.reshape(1, -1), metrics, axis=0)).max(axis=0)
-        tp.table(metrics, headers, width=width)
+        if len(metrics) > 0:
+            print(f"{region}:")
+            metrics = np.array(metrics)
+            width = np_len(np.append(headers.reshape(1, -1), metrics, axis=0)).max(axis=0)
+            tp.table(metrics, headers, width=width)
 
 
 def delete_instance(instance_id, region):
@@ -103,7 +105,73 @@ def delete_instance(instance_id, region):
     client.terminate_instances(InstanceIds=[instance_id], DryRun=False)
 
 
-def delete_decision(instance, region, all_metrics, cpu_max_treshold, network_treshold):
+def get_all_images():
+    images_dict = {}
+    for reg in regions:
+        print(f"\rAnalysing region '{reg}'...", end='')
+
+        ec2 = regions_clients[reg]
+        images = list(ec2.images.filter(Owners=['self']))
+
+        if len(images) > 0:
+            images_dict[reg] = {}
+        else:
+            continue
+        for image in images:
+            images_dict[reg][image.id] = {"image": image}  # TODO this does not need to be a dict
+    print("\r...Got all images")
+    return images_dict
+
+
+def images_pretty_print(images):
+    def get_image_array(image_entry):
+        image = image_entry['image']
+        # For creation date, we should parse as datetime and then strftime("%m/%d/%Y, %H:%M:%S")
+        return np.array(
+            [image.creation_date, image.id, image.name, image.image_type])
+
+    for region in images.keys():
+        print(f"{region}:")
+        headers = np.array(["Creation Date", "ID", "Name", "Type"])
+        data = np.array(list(map(get_image_array, images[region].values())))
+        width = np_len(np.append(headers.reshape(1, -1), data, axis=0)).max(axis=0)
+        tp.table(data, headers, width=width)
+
+
+def get_all_volumes():
+    volumes_dict = {}
+    for reg in regions:
+        print(f"\rAnalysing region '{reg}'...", end='')
+
+        ec2 = regions_clients[reg]
+        volumes = list(ec2.volumes.all())
+
+        if len(volumes) > 0:
+            volumes_dict[reg] = {}
+        else:
+            continue
+        for volume in volumes:
+            volumes_dict[reg][volume.id] = {"volume": volume}  # TODO this does not need to be a dict
+    print("\r...Got all volumes")
+    return volumes_dict
+
+
+def volumes_pretty_print(volumes):
+    def get_volume_array(volume_entry):
+        volume = volume_entry['volume']
+        # For creation date, we should parse as datetime and then strftime("%m/%d/%Y, %H:%M:%S")
+        return np.array(
+            [volume.create_time.strftime("%m/%d/%Y, %H:%M:%S"), volume.id, volume.iops, volume.volume_type, volume.size])
+
+    for region in volumes.keys():
+        print(f"{region}:")
+        headers = np.array(["Creation Date", "ID", "IOPS", "Type", "Size"])
+        data = np.array(list(map(get_volume_array, volumes[region].values())))
+        width = np_len(np.append(headers.reshape(1, -1), data, axis=0)).max(axis=0)
+        tp.table(data, headers, width=width)
+
+
+def delete_decision(instance, region, all_metrics, cpu_max_threshold, network_threshold):
     day_period = 24 * 3600
     hour_period = 3600
     cpu_metric = next((x['value'] for x in all_metrics if x['name'] == 'CPUUtilization'), None)
@@ -116,27 +184,27 @@ def delete_decision(instance, region, all_metrics, cpu_max_treshold, network_tre
 
     if cpu_metric:
         cpu_day = metric_for_instance(day_period, cpu_metric, instance.id, watch_client)
-        if cpu_day['Maximum'] < cpu_max_treshold:
-            return True, f"CPU Usage below {cpu_max_treshold}% over last 24 hours", cpu_metric, day_period
+        if cpu_day['Maximum'] < cpu_max_threshold:
+            return True, f"CPU Usage below {cpu_max_threshold}% over last 24 hours", cpu_metric, day_period
         cpu_hour = metric_for_instance(hour_period, cpu_metric, instance.id, watch_client)
-        if cpu_hour['Maximum'] < cpu_max_treshold:
-            return True, f"CPU Usage below {cpu_max_treshold}% over last hour", cpu_metric, hour_period
+        if cpu_hour['Maximum'] < cpu_max_threshold:
+            return True, f"CPU Usage below {cpu_max_threshold}% over last hour", cpu_metric, hour_period
 
     if network_in_metric:
         network_in_day = metric_for_instance(day_period, network_in_metric, instance.id, watch_client)
-        if network_in_day['Maximum'] < network_treshold:
-            return True, f"Network in below {network_treshold} bytes over last 24 hours", network_in_metric, day_period
+        if network_in_day['Maximum'] < network_threshold:
+            return True, f"Network in below {network_threshold} bytes over last 24 hours", network_in_metric, day_period
         network_in_hour = metric_for_instance(hour_period, network_in_metric, instance.id, watch_client)
-        if network_in_hour['Maximum'] < network_treshold:
-            return True, f"Network in below {network_treshold} bytes over last hour", network_in_metric, hour_period
+        if network_in_hour['Maximum'] < network_threshold:
+            return True, f"Network in below {network_threshold} bytes over last hour", network_in_metric, hour_period
 
     if network_out_metric:
         network_out_day = metric_for_instance(day_period, network_out_metric, instance.id, watch_client)
-        if network_out_day['Maximum'] < network_treshold:
-            return True, f"Network out below {network_treshold} bytes over last 24 hours", network_out_metric, day_period
+        if network_out_day['Maximum'] < network_threshold:
+            return True, f"Network out below {network_threshold} bytes over last 24 hours", network_out_metric, day_period
         network_out_hour = metric_for_instance(hour_period, network_out_metric, instance.id, watch_client)
-        if network_out_hour['Maximum'] < network_treshold:
-            return True, f"Network out below {network_treshold} bytes over last hour", network_out_metric, hour_period
+        if network_out_hour['Maximum'] < network_threshold:
+            return True, f"Network out below {network_threshold} bytes over last hour", network_out_metric, hour_period
 
     return False, "", None, None
 
@@ -156,8 +224,9 @@ menu_question = [{
     'choices': [
         {'name': "Refresh instance list", 'value': 'r'},
         {'name': "Choose an instance to delete", 'value': 'd'},
-        {'name': "View metrics", 'value': 'v'},
-        {'name': "View other resources (bonus implementation)", 'value': 'o'},
+        {'name': "View metrics", 'value': 'm'},
+        {'name': "View images", 'value': 'i'},
+        {'name': "View volumes", 'value': 'v'},
         {'name': "Quit", 'value': 'q'},
     ]
 }]
@@ -174,7 +243,7 @@ while running:
         criterias = [{
             'type': 'list',
             'name': 'cpu',
-            'message': 'What max CPU treshold do you want to use?',
+            'message': 'What max CPU threshold do you want to use?',
             'choices': [
                 {'name': '< 0 %', 'value': 0.0001},
                 {'name': '< 1 %', 'value': 1},
@@ -185,7 +254,7 @@ while running:
         }, {
             'type': 'list',
             'name': 'network',
-            'message': 'What network treshold do you want to use?',
+            'message': 'What network threshold do you want to use?',
             'choices': [
                 {'name': '< 500 bytes', 'value': 500},
                 {'name': '< 100 kbytes', 'value': 100e3},
@@ -234,7 +303,7 @@ while running:
                 delete_instance(instance['id'], instance['region'])
                 print("...Done")
         pass
-    elif key == 'v':
+    elif key == 'm':
         metrics_questions = [{
             'type': 'list',
             'name': 'metric',
@@ -256,9 +325,14 @@ while running:
     elif key == 'r':
         all_instances, all_metrics = find_all_instances()
         instances_pretty_print(all_instances)
-    elif key == 'o':
+    elif key == 'i':
         # get other resources types
+        images = get_all_images()
+        images_pretty_print(images)
         pass
+    elif key == 'v':
+        volumes = get_all_volumes()
+        volumes_pretty_print(volumes)
     else:
         print("Unsupported operation")
 
