@@ -4,8 +4,12 @@ docutils==0.14
 future==0.17.1
 jmespath==0.9.4
 numpy==1.16.3
+prompt-toolkit==1.0.14
+Pygments==2.4.2
+PyInquirer==1.0.3
 python-dateutil==2.8.0
 python-dotenv==0.10.1
+regex==2019.5.25
 s3transfer==0.2.0
 six==1.12.0
 tableprint==0.8.0

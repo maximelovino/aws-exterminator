@@ -18,6 +18,14 @@ regions_cloudwatches = {region: boto3.client('cloudwatch', region_name=region) f
 np_len = np.vectorize(len)
 
 
+def sizeof_fmt(num, suffix='B'):
+    for unit in ['', 'Ki', 'Mi', 'Gi', 'Ti', 'Pi', 'Ei', 'Zi']:
+        if abs(num) < 1024.0:
+            return "%3.1f%s%s" % (num, unit, suffix)
+        num /= 1024.0
+    return "%.1f%s%s" % (num, 'Yi', suffix)
+
+
 def find_all_instances():
     instances_dict = {}
     all_metrics = []
@@ -41,6 +49,9 @@ def find_all_instances():
                 if not next((x for x in all_metrics if x['name'] == met['MetricName']), None):
                     all_metrics.append({'name': met['MetricName'], 'value': met})
     print("\r...Got all instances")
+
+    all_metrics.sort(key=lambda x: x['name'])
+
     return instances_dict, all_metrics
 
 
@@ -82,7 +93,7 @@ def print_metrics(period, met, instances):
     print(met['MetricName'])
     for region in instances.keys():
 
-        headers = np.array(["ID", "Min", "Max", "Average", "Unit"])
+        headers = np.array(["ID", "Min", "Max", "Average", "Sum", "Sample count"])
         watch = regions_cloudwatches[region]
         metrics = []
         for instance_id in instances[region].keys():
@@ -90,7 +101,14 @@ def print_metrics(period, met, instances):
                 continue
             try:
                 data = metric_for_instance(period, met, instance_id, watch)
-                metrics.append([instance_id, data['Minimum'], data['Maximum'], data['Average'], data['Unit']])
+                for data_key in ['Minimum', 'Maximum', 'Average', 'Sum']:
+                    if data['Unit'] == 'Bytes':
+                        data[data_key] = sizeof_fmt(data[data_key])
+                    elif data['Unit'] == 'Percent':
+                        data[data_key] = f"{data[data_key]} %"
+                    else:
+                        data[data_key] = f"{data[data_key]} {data['Unit']}"
+                metrics.append([instance_id, data['Minimum'], data['Maximum'], data['Average'], data['Sum'], data['SampleCount']])
             except:
                 print(f"Couldn't get metrics for {instance_id}")
         if len(metrics) > 0:
@@ -172,8 +190,10 @@ def volumes_pretty_print(volumes):
 
 
 def delete_decision(instance, region, all_metrics, cpu_max_threshold, network_threshold):
-    day_period = 24 * 3600
-    hour_period = 3600
+    hour_period = 60 * 60
+    day_period = 24 * hour_period
+    week_period = 7 * day_period
+
     cpu_metric = next((x['value'] for x in all_metrics if x['name'] == 'CPUUtilization'), None)
     network_in_metric = next((x['value'] for x in all_metrics if x['name'] == 'NetworkIn'), None)
     network_out_metric = next((x['value'] for x in all_metrics if x['name'] == 'NetworkOut'), None)
@@ -239,6 +259,10 @@ while running:
     if key == 'q':
         running = False
     elif key == 'd':
+        if len(all_metrics) == 0:
+            print("No metrics available at the moment")
+            continue
+
         print("We will check the specified criterias for periods of 1 day and 1 hour with decreasing priority")
         criterias = [{
             'type': 'list',
@@ -304,6 +328,10 @@ while running:
                 print("...Done")
         pass
     elif key == 'm':
+        if len(all_metrics) == 0:
+            print("No metrics available at the moment")
+            continue
+
         metrics_questions = [{
             'type': 'list',
             'name': 'metric',
@@ -321,7 +349,6 @@ while running:
         }]
         answers = prompt(metrics_questions)
         print_metrics(answers['duration'], answers['metric'], all_instances)
-        pass
     elif key == 'r':
         all_instances, all_metrics = find_all_instances()
         instances_pretty_print(all_instances)
