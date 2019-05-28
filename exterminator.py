@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import tableprint as tp
 import numpy as np
-from PyInquirer import prompt
+from PyInquirer import prompt, Separator
 
 load_dotenv()
 
@@ -67,6 +67,17 @@ def instances_pretty_print(instances):
         tp.table(data, headers, width=width)
 
 
+def metric_for_instance(period, met, instance_id, watch_client):
+    dimensions = [{'Name': 'InstanceId', 'Value': instance_id}]
+    response = watch_client.get_metric_statistics(Namespace=met['Namespace'], MetricName=met['MetricName'], Dimensions=dimensions, Statistics=[
+        'SampleCount', 'Average', 'Sum', 'Minimum', 'Maximum',
+    ], Period=period, EndTime=datetime.utcnow(), StartTime=datetime.utcnow() - timedelta(seconds=period))
+    if not response or not response['Datapoints']:
+        raise Exception
+    data = response['Datapoints'][0]
+    return data
+
+
 def print_metrics(period, met, instances):
     print(met['MetricName'])
     for region in instances.keys():
@@ -75,17 +86,59 @@ def print_metrics(period, met, instances):
         watch = regions_cloudwatches[region]
         metrics = []
         for instance_id in instances[region].keys():
-            dimensions = [{'Name': 'InstanceId', 'Value': instance_id}]
-            response = watch.get_metric_statistics(Namespace=met['Namespace'], MetricName=met['MetricName'], Dimensions=dimensions, Statistics=[
-                'SampleCount', 'Average', 'Sum', 'Minimum', 'Maximum',
-            ], Period=period, EndTime=datetime.utcnow(), StartTime=datetime.utcnow() - timedelta(seconds=period))
-            if not response or not response['Datapoints']:
+            if not instances[region][instance_id]['instance'].state['Name'] == 'running':
                 continue
-            data = response['Datapoints'][0]
-            metrics.append([instance_id, data['Minimum'], data['Maximum'], data['Average'], data['Unit']])
+            try:
+                data = metric_for_instance(period, met, instance_id, watch)
+                metrics.append([instance_id, data['Minimum'], data['Maximum'], data['Average'], data['Unit']])
+            except:
+                print(f"Couldn't get metrics for {instance_id}")
         metrics = np.array(metrics)
         width = np_len(np.append(headers.reshape(1, -1), metrics, axis=0)).max(axis=0)
         tp.table(metrics, headers, width=width)
+
+
+def delete_instance(instance_id, region):
+    client = boto3.client('ec2', region_name=region)
+    client.terminate_instances(InstanceIds=[instance_id], DryRun=False)
+
+
+def delete_decision(instance, region, all_metrics, cpu_max_treshold, network_treshold):
+    day_period = 24 * 3600
+    hour_period = 3600
+    cpu_metric = next((x['value'] for x in all_metrics if x['name'] == 'CPUUtilization'), None)
+    network_in_metric = next((x['value'] for x in all_metrics if x['name'] == 'NetworkIn'), None)
+    network_out_metric = next((x['value'] for x in all_metrics if x['name'] == 'NetworkOut'), None)
+    watch_client = regions_cloudwatches[region]
+
+    if instance.state['Name'] == 'stopped':
+        return True, "Instance is stopped", None, None
+
+    if cpu_metric:
+        cpu_day = metric_for_instance(day_period, cpu_metric, instance.id, watch_client)
+        if cpu_day['Maximum'] < cpu_max_treshold:
+            return True, f"CPU Usage below {cpu_max_treshold}% over last 24 hours", cpu_metric, day_period
+        cpu_hour = metric_for_instance(hour_period, cpu_metric, instance.id, watch_client)
+        if cpu_hour['Maximum'] < cpu_max_treshold:
+            return True, f"CPU Usage below {cpu_max_treshold}% over last hour", cpu_metric, hour_period
+
+    if network_in_metric:
+        network_in_day = metric_for_instance(day_period, network_in_metric, instance.id, watch_client)
+        if network_in_day['Maximum'] < network_treshold:
+            return True, f"Network in below {network_treshold} bytes over last 24 hours", network_in_metric, day_period
+        network_in_hour = metric_for_instance(hour_period, network_in_metric, instance.id, watch_client)
+        if network_in_hour['Maximum'] < network_treshold:
+            return True, f"Network in below {network_treshold} bytes over last hour", network_in_metric, hour_period
+
+    if network_out_metric:
+        network_out_day = metric_for_instance(day_period, network_out_metric, instance.id, watch_client)
+        if network_out_day['Maximum'] < network_treshold:
+            return True, f"Network out below {network_treshold} bytes over last 24 hours", network_out_metric, day_period
+        network_out_hour = metric_for_instance(hour_period, network_out_metric, instance.id, watch_client)
+        if network_out_hour['Maximum'] < network_treshold:
+            return True, f"Network out below {network_treshold} bytes over last hour", network_out_metric, hour_period
+
+    return False, "", None, None
 
 
 all_instances, all_metrics = find_all_instances()
@@ -104,6 +157,7 @@ menu_question = [{
         {'name': "Refresh instance list", 'value': 'r'},
         {'name': "Choose an instance to delete", 'value': 'd'},
         {'name': "View metrics", 'value': 'v'},
+        {'name': "View other resources (bonus implementation)", 'value': 'o'},
         {'name': "Quit", 'value': 'q'},
     ]
 }]
@@ -116,10 +170,71 @@ while running:
     if key == 'q':
         running = False
     elif key == 'd':
-        # TODO find suitable instances to delete
+        print("We will check the specified criterias for periods of 1 day and 1 hour with decreasing priority")
+        criterias = [{
+            'type': 'list',
+            'name': 'cpu',
+            'message': 'What max CPU treshold do you want to use?',
+            'choices': [
+                {'name': '< 0 %', 'value': 0.0001},
+                {'name': '< 1 %', 'value': 1},
+                {'name': '< 5 %', 'value': 5},
+                {'name': '< 10 %', 'value': 10},
+                {'name': '< 20 %', 'value': 20},
+            ]
+        }, {
+            'type': 'list',
+            'name': 'network',
+            'message': 'What network treshold do you want to use?',
+            'choices': [
+                {'name': '< 500 bytes', 'value': 500},
+                {'name': '< 100 kbytes', 'value': 100e3},
+                {'name': '< 1 Mbytes', 'value': 1e6},
+                {'name': '< 10 Mbytes', 'value': 10e6},
+            ]
+        }]
+
+        answers = prompt(criterias)
+
+        instances_to_delete = []
+        normal_instances = []
+        for region in all_instances.keys():
+            for instance_id in all_instances[region].keys():
+                instance = all_instances[region][instance_id]['instance']
+                if instance.state['Name'] in ['shutting-down', 'terminated']:
+                    continue
+                delete = delete_decision(instance, region, all_metrics, answers['cpu'], answers['network'])
+                if delete[0]:
+                    instances_to_delete.append({'name': f"{region}: {instance_id} => {delete[1]}",
+                                                'value': {'region': region, 'id': instance_id, 'metric': delete[2], 'period': delete[3]}})
+                else:
+                    normal_instances.append({'name': f"{region}: {instance_id}",
+                                             'value': {'region': region, 'id': instance_id}})
+
+        to_delete_questions = [{
+            'type': 'list',
+            'name': 'instance',
+            'message': 'What instance do you want to delete?',
+            'choices': instances_to_delete + [Separator()] + normal_instances + [Separator(), {'name': "Don't delete anything", 'value': None}]
+        }]
+        answers = prompt(to_delete_questions)
+
+        if 'instance' in answers:
+            instance = answers['instance']
+            confirmation_question = [{
+                'type': 'confirm',
+                'message': f"Are you sure you want to delete instance {instance['id']}?",
+                'name': 'delete',
+                'default': True,
+            }]
+            confirmation = prompt(confirmation_question)
+
+            if confirmation['delete']:
+                print("Deleting instance...")
+                delete_instance(instance['id'], instance['region'])
+                print("...Done")
         pass
     elif key == 'v':
-
         metrics_questions = [{
             'type': 'list',
             'name': 'metric',
@@ -141,6 +256,9 @@ while running:
     elif key == 'r':
         all_instances, all_metrics = find_all_instances()
         instances_pretty_print(all_instances)
+    elif key == 'o':
+        # get other resources types
+        pass
     else:
         print("Unsupported operation")
 
