@@ -40,7 +40,7 @@ def find_all_instances():
         else:
             continue
         for instance in instances:
-            instances_dict[reg][instance.id] = {"instance": instance, "metrics": {}}  # TODO this does not need to be a dict
+            instances_dict[reg][instance.id] = instance
             watch = regions_cloudwatches[reg]
             metrics = watch.list_metrics(Namespace='AWS/EC2', Dimensions=[{"Name": "InstanceId",
                                                                            "Value": instance.id}])
@@ -60,8 +60,7 @@ def get_instance_link(region, instance_id):
 
 
 def instances_pretty_print(instances):
-    def get_instance_array(instance_entry):
-        instance = instance_entry['instance']
+    def get_instance_array(instance):
         if instance.tags:
             name = next((item['Value'] for item in instance.tags if item["Key"] == "Name"), "-----")
         else:
@@ -97,7 +96,7 @@ def print_metrics(period, met, instances):
         watch = regions_cloudwatches[region]
         metrics = []
         for instance_id in instances[region].keys():
-            if not instances[region][instance_id]['instance'].state['Name'] == 'running':
+            if not instances[region][instance_id].state['Name'] == 'running':
                 continue
             try:
                 data = metric_for_instance(period, met, instance_id, watch)
@@ -136,14 +135,13 @@ def get_all_images():
         else:
             continue
         for image in images:
-            images_dict[reg][image.id] = {"image": image}  # TODO this does not need to be a dict
+            images_dict[reg][image.id] = image
     print("\r\033[K...Got all images")
     return images_dict
 
 
 def images_pretty_print(images):
-    def get_image_array(image_entry):
-        image = image_entry['image']
+    def get_image_array(image):
         # For creation date, we should parse as datetime and then strftime("%m/%d/%Y, %H:%M:%S")
         return np.array(
             [image.creation_date, image.id, image.name, image.image_type])
@@ -169,14 +167,13 @@ def get_all_volumes():
         else:
             continue
         for volume in volumes:
-            volumes_dict[reg][volume.id] = {"volume": volume}  # TODO this does not need to be a dict
+            volumes_dict[reg][volume.id] = volume
     print("\r\033[K...Got all volumes")
     return volumes_dict
 
 
 def volumes_pretty_print(volumes):
-    def get_volume_array(volume_entry):
-        volume = volume_entry['volume']
+    def get_volume_array(volume):
         # For creation date, we should parse as datetime and then strftime("%m/%d/%Y, %H:%M:%S")
         return np.array(
             [volume.create_time.strftime("%m/%d/%Y, %H:%M:%S"), volume.id, volume.iops, volume.volume_type, volume.size])
@@ -279,7 +276,7 @@ while running:
         normal_instances = []
         for region in all_instances.keys():
             for instance_id in all_instances[region].keys():
-                instance = all_instances[region][instance_id]['instance']
+                instance = all_instances[region][instance_id]
                 if instance.state['Name'] in ['shutting-down', 'terminated']:
                     continue
                 delete = delete_decision(instance, region, all_metrics, answers['cpu'], answers['network'])
