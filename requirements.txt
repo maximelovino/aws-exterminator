@@ -5,7 +5,7 @@ future==0.17.1
 jmespath==0.9.4
 numpy==1.16.3
 prompt-toolkit==1.0.14
-Pygments==2.4.2
+Pygments==2.7.4
 PyInquirer==1.0.3
 python-dateutil==2.8.0
 python-dotenv==0.10.1
